@@ -450,7 +450,7 @@ export function App() {
   const [pendoState, setPendoState] = useState<PendoState>(() => detectPendoState());
   const [active, setActive] = useState<Set<string>>(() => new Set());
 
-  const [globalMounted, setGlobalMounted] = useState(false);
+  const [globalMounted, setGlobalMounted] = useState(true);
   const [globalBoundaryKey, setGlobalBoundaryKey] = useState(0);
   const [globalErrored, setGlobalErrored] = useState(false);
 
@@ -505,7 +505,7 @@ export function App() {
 
   const resetGlobal = () => {
     setActive(new Set());
-    setGlobalMounted(false);
+    setGlobalMounted(true);
     setGlobalErrored(false);
     setGlobalBoundaryKey((k) => k + 1);
   };
@@ -648,9 +648,10 @@ export function App() {
         <Intro style={{ marginTop: '20px' }}>
           Next, toggle the following CSS rules on and off repeatedly. When errors are suppressed,
           unrelated styles are deleted from the page or <code>IndexSizeError</code> propagates to
-          the nearest error boundary. An easy way to trigger both cases: mount both components, then
-          check all the boxes top to bottom and uncheck them top to bottom — you may have to toggle
-          an invalid rule on and off a few times to see the full extent of the issue.
+          the nearest error boundary. An easy way to trigger both cases is to check all the boxes
+          top to bottom and uncheck them top to bottom — breakage usually becomes obvious after
+          about 5 toggles of an invalid rule, though it can take as many as 20 before the cleanup
+          path walks far enough past the end of the sheet to throw.
         </Intro>
         <SplitLayout>
           <Panel>
@@ -783,12 +784,9 @@ export function App() {
               <SectionIntro style={{ margin: '0 0 8px' }}>
                 Shares the page-wide styled-components sheet. Drifted deletes hit other
                 components&rsquo; rules — watch the surrounding UI lose its styling until an
-                out-of-bounds error is thrown.
-              </SectionIntro>
-              <SectionIntro style={{ margin: '0 0 8px' }}>
-                Not mounted by default because it can disrupt this page&rsquo;s own UI — which is
-                exactly the concern in a real application, where a shared styled-components sheet
-                means the drift can silently corrupt styles anywhere on the page.
+                out-of-bounds error is thrown. This is exactly the concern in a real application,
+                where a shared styled-components sheet means the drift can silently corrupt styles
+                anywhere on the page.
               </SectionIntro>
 
               <UnmountErrorBoundary key={globalBoundaryKey} onError={() => setGlobalErrored(true)}>
