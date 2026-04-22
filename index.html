@@ -2,9 +2,32 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>pendo-styled-components-repro</title>
+    <title>Pendo Web SDK insertRule regression</title>
+
+    <!--
+      Capture native CSSOM methods before anything (Pendo, styled-components, or MUI)
+      has a chance to wrap them. These references are used at runtime
+      to determine which pill rules the browser's own parser actually
+      rejects — independent of Pendo's wrap — so the repro reflects
+      reality per-browser (Chrome rejects some foreign vendor prefixes,
+      Firefox accepts many of them for web-compat aliasing, etc.).
+    -->
+    <script>
+      window.__nativeInsertRule = CSSStyleSheet.prototype.insertRule;
+      window.__nativeDeleteRule = CSSStyleSheet.prototype.deleteRule;
+    </script>
+
+    <!--
+      Force styled-components into speedy (CSSOMTag) mode even in dev
+      builds. styled-components' dev default is TextTag (text-node injection),
+      which bypasses insertRule entirely and therefore bypasses Pendo's
+      wrapper — the bug only surfaces when styled-components is on the insertRule path.
+      Must run before styled-components' module initializer.
+    -->
+    <script>
+      window.SC_DISABLE_SPEEDY = false;
+    </script>
   </head>
   <body>
     <div id="root"></div>
