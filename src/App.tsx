@@ -10,19 +10,40 @@ declare global {
   }
 }
 
-// Behaviorally test whether Pendo's suppressing wrapper is installed on
-// CSSStyleSheet.prototype.insertRule. Can't use toString() or identity
+// Behaviorally test whether Pendo's suppressing wrapper is installed on a
+// given CSSStyleSheet prototype method. Can't use toString() or identity
 // because Pendo wraps via `new Proxy(fn, { apply })` and Proxies forward
 // toString() to the target — wrapped and native are indistinguishable
-// structurally. Instead, poke at behavior: feed it deliberately invalid
-// CSS and see whether it throws. Native throws SyntaxError; Pendo
-// 2.321.0's wrapper suppresses; Pendo 2.320.2's wrapper propagates.
+// structurally. Instead, poke at behavior: feed it an operation the
+// native method is guaranteed to reject and see whether the throw
+// propagates. For insertRule: invalid CSS (SyntaxError). For deleteRule:
+// an out-of-range index (IndexSizeError).
+//
+// Observed across the versions we've tested:
+//   2.320.2 — neither insertRule nor deleteRule suppresses.
+//   2.321.0 — insertRule suppresses (the regression), deleteRule throws.
+//   2.321.1 — both suppress; the added deleteRule catch hides the
+//             IndexSizeError that leaked from the 2.321.0 drift but
+//             doesn't fix the drift itself.
 function insertRuleSuppresses(): boolean {
   const el = document.createElement('style');
   document.head.appendChild(el);
   let threw = false;
   try {
     el.sheet!.insertRule('@@@ not css', 0);
+  } catch {
+    threw = true;
+  }
+  el.remove();
+  return !threw;
+}
+
+function deleteRuleSuppresses(): boolean {
+  const el = document.createElement('style');
+  document.head.appendChild(el);
+  let threw = false;
+  try {
+    el.sheet!.deleteRule(999);
   } catch {
     threw = true;
   }
@@ -375,7 +396,8 @@ const DriftStatus = styled.div<{ $state: 'armed' | 'ok' | 'neutral' }>`
 type PendoState = {
   loaded: boolean;
   version: string | null;
-  wrapperSuppresses: boolean;
+  insertSuppresses: boolean;
+  deleteSuppresses: boolean;
 };
 
 function detectPendoState(): PendoState {
@@ -383,7 +405,8 @@ function detectPendoState(): PendoState {
   return {
     loaded: !!pendo,
     version: typeof pendo?.VERSION === 'string' ? pendo.VERSION : null,
-    wrapperSuppresses: insertRuleSuppresses(),
+    insertSuppresses: insertRuleSuppresses(),
+    deleteSuppresses: deleteRuleSuppresses(),
   };
 }
 
@@ -533,31 +556,36 @@ export function App() {
   const currentAgent = params.get('agent');
   const isNoPendo = currentKey == null && currentAgent == null;
 
-  let pendoPill: { variant: 'neutral' | 'ok' | 'warn' | 'err'; text: string };
+  type PillSpec = { variant: 'neutral' | 'ok' | 'warn' | 'err'; text: string };
+  let pendoPills: PillSpec[];
   if (!pendoState.loaded) {
-    pendoPill = { variant: 'neutral', text: 'Pendo not loaded' };
-  } else if (pendoState.wrapperSuppresses) {
-    pendoPill = {
-      variant: 'err',
-      text: `Pendo ${pendoState.version ?? '(unknown version)'} — wrapper is suppressing`,
-    };
-  } else if (pendoState.version) {
-    pendoPill = {
-      variant: 'ok',
-      text: `Pendo ${pendoState.version} — wrapper is not suppressing`,
-    };
+    pendoPills = [{ variant: 'neutral', text: 'Pendo not loaded' }];
+  } else if (!pendoState.version) {
+    pendoPills = [
+      {
+        variant: 'warn',
+        text: 'Pendo agent loaded, waiting for session replay to initialize\u2026',
+      },
+    ];
   } else {
-    pendoPill = {
-      variant: 'warn',
-      text: 'Pendo agent loaded, waiting for session replay to initialize\u2026',
-    };
+    pendoPills = [
+      { variant: 'neutral', text: `Pendo ${pendoState.version}` },
+      {
+        variant: pendoState.insertSuppresses ? 'err' : 'ok',
+        text: `insertRule: ${pendoState.insertSuppresses ? 'suppressing throws' : 'propagating throws'}`,
+      },
+      {
+        variant: pendoState.deleteSuppresses ? 'err' : 'ok',
+        text: `deleteRule: ${pendoState.deleteSuppresses ? 'suppressing throws' : 'propagating throws'}`,
+      },
+    ];
   }
 
   const activeCSS = RULES.filter((r) => active.has(r.key))
     .map((r) => r.css)
     .join('\n');
   const activeInvalidCount = RULES.filter((r) => active.has(r.key) && r.invalid).length;
-  const drifting = activeInvalidCount > 0 && pendoState.wrapperSuppresses;
+  const drifting = activeInvalidCount > 0 && pendoState.insertSuppresses;
 
   return (
     <Page>
@@ -566,11 +594,12 @@ export function App() {
       </h1>
 
       <Intro>
-        Pendo&rsquo;s Web SDK wraps <code>CSSStyleSheet.prototype.insertRule</code> with a Proxy as
-        part of its <strong>session replay</strong> feature. Certain versions (e.g.&nbsp;2.321.0)
-        introduce a regression that suppresses the browser&rsquo;s native <code>SyntaxError</code>{' '}
-        on invalid rules instead of letting them propagate. The wrapper only installs when session
-        recording is enabled — without it, the bug does not manifest.
+        Pendo&rsquo;s Web SDK wraps <code>CSSStyleSheet.prototype.insertRule</code> and{' '}
+        <code>CSSStyleSheet.prototype.deleteRule</code> with Proxies as part of its{' '}
+        <strong>session replay</strong> feature. Starting in 2.321.0, the <code>insertRule</code>{' '}
+        wrapper suppresses the browser&rsquo;s native <code>SyntaxError</code> on invalid rules
+        instead of letting it propagate. The wrappers only install when session recording is enabled
+        — without it, the bug does not manifest.
       </Intro>
       <Intro>
         An example of an affected library is{' '}
@@ -585,6 +614,15 @@ export function App() {
         real sheet. Without the throw, the counter drifts, and later cleanup either throws{' '}
         <code>IndexSizeError</code> which propagates to the nearest error boundary, or deletes
         unrelated components&rsquo; rules (<strong>silent corruption</strong>).
+      </Intro>
+      <Intro>
+        Pendo 2.321.1 extends the same <code>{'try {} / catch {}'}</code> to the{' '}
+        <code>deleteRule</code> wrapper. This hides the <code>IndexSizeError</code> that was
+        propagating out of Demo 1, but does <strong>not</strong> fix the underlying drift —{' '}
+        <code>insertRule</code> still swallows throws, the counter still desynchronizes, and
+        drifted deletes still silently remove rules belonging to unrelated components. The two
+        pills below report each wrapper&rsquo;s behavior independently; the bug requires only{' '}
+        <code>insertRule</code> to be suppressing.
       </Intro>
 
       <ModeSection>
@@ -617,7 +655,11 @@ export function App() {
           >
             Load from CDN
           </AgentOption>
-          <Pill $variant={pendoPill.variant}>{pendoPill.text}</Pill>
+          {pendoPills.map((p, i) => (
+            <Pill key={i} $variant={p.variant}>
+              {p.text}
+            </Pill>
+          ))}
         </AgentPicker>
 
         <CdnDialog
